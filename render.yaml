@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: cs2-vault
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: STEAM_ID
+        value: "76561199781756585"
+      - key: CACHE_TTL_MS
+        value: "300000"
