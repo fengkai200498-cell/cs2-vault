@@ -4,7 +4,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const STEAM_ID = process.env.STEAM_ID || "76561199781756585";
 const CACHE_TTL = Number(process.env.CACHE_TTL_MS || 900000);
-const RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
+const RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 app.use(express.static(path.join(__dirname, "public")));
 let cache = { at: 0, data: null }, inflight = null, blockedUntil = 0;
 
@@ -16,7 +16,7 @@ async function fetchInventory() {
     url.searchParams.set("l", "english"); url.searchParams.set("count", "2000");
     if (start) url.searchParams.set("start_assetid", start);
     const response = await fetch(url, {headers:{"User-Agent":"Mozilla/5.0 CS2Vault/1.0","Accept":"application/json"},signal:AbortSignal.timeout(20000)});
-    if (response.status === 429) { const err = new Error("Steam đang giới hạn truy cập (HTTP 429). Đây là giới hạn từ máy chủ Steam, không phải lỗi quyền riêng tư."); err.status = 429; throw err; }
+    if (response.status === 429) { const retryAfter = Number(response.headers.get("retry-after") || 0); const err = new Error("Steam đang giới hạn truy cập (HTTP 429). Máy chủ sẽ tự chờ trước khi thử lại."); err.status = 429; err.retryAfterMs = retryAfter > 0 ? retryAfter * 1000 : RATE_LIMIT_COOLDOWN_MS; throw err; }
     if (!response.ok) { const err = new Error(`Steam trả về HTTP ${response.status}.`); err.status = response.status; throw err; }
     const page = await response.json();
     if (Number(page.success) !== 1) throw new Error("Steam không cho phép đọc kho đồ. Hãy đặt Inventory Privacy thành Public.");
@@ -55,9 +55,9 @@ app.get("/api/inventory", async (req,res) => {
     if (!inflight) inflight = fetchInventory().then(data => {cache={at:Date.now(),data};return data;}).finally(()=>{inflight=null;});
     res.json({...await inflight,cached:false});
   } catch (e) {
-    if (e.status === 429) blockedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+    if (e.status === 429) blockedUntil = Date.now() + (e.retryAfterMs || RATE_LIMIT_COOLDOWN_MS);
     if (cache.data) return res.json({...cache.data,cached:true,stale:true,warning:e.message});
-    res.status(e.status === 429 ? 429 : 502).json({error:e.message || "Không thể tải kho đồ Steam.",hint:e.status === 429 ? "Steam đang giới hạn IP máy chủ. Không nên liên tục bấm làm mới; hãy chờ hệ thống tự thử lại." : "Nếu kho đồ đã Public mà vẫn lỗi, hãy kiểm tra trạng thái Steam."});
+    if (e.status === 429) res.set("Retry-After", String(Math.ceil((blockedUntil-Date.now())/1000)));\n    res.status(e.status === 429 ? 429 : 502).json({error:e.message || "Không thể tải kho đồ Steam.",retryAfterSeconds:e.status === 429 ? Math.ceil((blockedUntil-Date.now())/1000) : undefined,hint:e.status === 429 ? "Steam đang giới hạn IP máy chủ. Không nên liên tục bấm làm mới; hệ thống sẽ tự thử lại sau thời gian chờ." : "Nếu kho đồ đã Public mà vẫn lỗi, hãy kiểm tra trạng thái Steam."});
   }
 });
 app.get("/health",(_req,res)=>res.json({ok:true}));
