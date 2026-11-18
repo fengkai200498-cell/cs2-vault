@@ -3,9 +3,9 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 const STEAM_ID = process.env.STEAM_ID || "76561199781756585";
-const CACHE_TTL = Number(process.env.CACHE_TTL_MS || 300000);
+const CACHE_TTL = Number(process.env.CACHE_TTL_MS || 900000);\nconst RATE_LIMIT_COOLDOWN_MS = 5 * 60 * 1000;
 app.use(express.static(path.join(__dirname, "public")));
-let cache = { at: 0, data: null }, inflight = null;
+let cache = { at: 0, data: null }, inflight = null, blockedUntil = 0;
 
 async function fetchInventory() {
   const assets = [], descriptions = new Map(), properties = new Map();
@@ -15,7 +15,7 @@ async function fetchInventory() {
     url.searchParams.set("l", "english"); url.searchParams.set("count", "2000");
     if (start) url.searchParams.set("start_assetid", start);
     const response = await fetch(url, {headers:{"User-Agent":"Mozilla/5.0 CS2Vault/1.0","Accept":"application/json"},signal:AbortSignal.timeout(20000)});
-    if (!response.ok) throw new Error(`Steam trả về HTTP ${response.status}. Hãy kiểm tra quyền riêng tư kho đồ.`);
+    if (response.status === 429) { const err = new Error("Steam đang giới hạn truy cập (HTTP 429). Đây là giới hạn từ máy chủ Steam, không phải lỗi quyền riêng tư."); err.status = 429; throw err; }\n    if (!response.ok) { const err = new Error(`Steam trả về HTTP ${response.status}.`); err.status = response.status; throw err; }
     const page = await response.json();
     if (Number(page.success) !== 1) throw new Error("Steam không cho phép đọc kho đồ. Hãy đặt Inventory Privacy thành Public.");
     assets.push(...(page.assets || []));
@@ -52,7 +52,7 @@ app.get("/api/inventory", async (req,res) => {
   try {
     if (!inflight) inflight = fetchInventory().then(data => {cache={at:Date.now(),data};return data;}).finally(()=>{inflight=null;});
     res.json({...await inflight,cached:false});
-  } catch (e) { res.status(502).json({error:e.message || "Không thể tải kho đồ Steam.",hint:"Kiểm tra Steam Profile, Game Details và Inventory đều ở chế độ Public."}); }
+  } catch (e) {\n    if (e.status === 429) blockedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;\n    if (cache.data) return res.json({...cache.data,cached:true,stale:true,warning:e.message});\n    res.status(e.status === 429 ? 429 : 502).json({error:e.message || "Không thể tải kho đồ Steam.",hint:e.status === 429 ? "Steam đang giới hạn IP máy chủ. Không nên liên tục bấm làm mới; hãy chờ hệ thống tự thử lại." : "Nếu kho đồ đã Public mà vẫn lỗi, hãy kiểm tra trạng thái Steam."});\n  }
 });
 app.get("/health",(_req,res)=>res.json({ok:true}));
 app.listen(PORT,()=>console.log(`CS2 Vault listening on ${PORT}`));
